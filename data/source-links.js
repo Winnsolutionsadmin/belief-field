@@ -7,7 +7,6 @@ window.SOURCE_LINKS = {
  "2022-11-29-custody-is-just-the-start": "https://anchorage.medium.com/...-8e93f7e64475",
  "2025-american-banker-stablecoins-podcast": "https://americanbanker.com/podcast/advice-on-coping-with-stablecoins...",
  "2026-03-30-moving-the-needle-on-crypto-policy": "https://anchorage.com/insights/moving-the-needle-on-crypto-policy",
- "2026-05-26-jarred-nathan-personality-intake": "https://anchorage.com/insights/writing-playbook-anchorage-digital-marks-five-years...",
  "a16z-founding-2019": "https://techcrunch.com/2019/01/23/anchorage-security/",
  "americanbanker-consent-order-terminated-2025-08-21": "https://americanbanker.com/news/occ-terminates-consent-order-against-anchorage-digital",
  "americanbanker-tether-100m-2026-02-05": "https://americanbanker.com/news/anchorage-gets-100-million-from-tether-to-fuel-crypto-race",

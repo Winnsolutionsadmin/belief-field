@@ -129,10 +129,21 @@ function layoutBeliefsTiered(sectors, clusters, beliefs) {
   // outward from the cluster center so chains stay legible. Legacy single-tier
   // 'category'/'source' hubs without a parent fall back to the cluster shell.
   const TIER_ORDER = { category: 0, source: 1 };
+  // Recency boost inflates the rendered glass core by up to +35% (engine.js), so the
+  // layout must use the BOOSTED radius or boosted beliefs swallow their own hubs
+  // (fixed 2026-06-10: 'some of his sections are inside the cluster bubbles').
+  const boostByCluster = new Map();
+  beliefs.forEach(b => {
+    if (b.kind === 'cluster') boostByCluster.set(b.cluster, b.recencyBoost || 0);
+  });
+  const effCoreR = (cid) => {
+    const qc = clusters.find(c => c.id === cid)?.quote_count;
+    return coreRadius(qc) * (1 + 0.35 * (boostByCluster.get(cid) || 0));
+  };
   const TIER_DIST = {
     // category hubs sit clearly OUTSIDE the belief's glass core (never inside the ball)
-    category: (coreR, f) => coreR + 10 + Math.sqrt(f || 1) * 1.4,
-    source:   (_r, f) => 5.5 + Math.sqrt(f || 1) * 0.9,
+    category: (coreR, f) => coreR + 12 + Math.sqrt(f || 1) * 1.4,
+    source:   (_r, f) => 6 + Math.sqrt(f || 1) * 0.9,
   };
   const tiered = hubs.filter(h => h.hubType in TIER_ORDER)
     .sort((a, b) => TIER_ORDER[a.hubType] - TIER_ORDER[b.hubType]);
@@ -156,7 +167,7 @@ function layoutBeliefsTiered(sectors, clusters, beliefs) {
     const outward = cc && pp && !pp.equals(cc)
       ? pp.clone().sub(cc).normalize()
       : pp.clone().normalize();
-    const coreR = coreRadius(clusters.find(c => c.id === sibs[0].cluster)?.quote_count);
+    const coreR = effCoreR(sibs[0].cluster);
     sibs.forEach((h, hi) => {
       const yc = 1 - (hi / Math.max(1, sibs.length - 1)) * 1.6;
       const rc = Math.sqrt(Math.max(0, 1 - yc * yc));

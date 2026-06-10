@@ -187,6 +187,16 @@ td.qcell{border-left:3px solid transparent}
   }
   if(window.MAP_HREF) document.getElementById('navMap').href = window.MAP_HREF;
   const beliefs = DB.beliefs, byId = Object.fromEntries(beliefs.map(b=>[b.id,b]));
+  // Normalize name/gloss semantics (reference builds disagree on which field holds the
+  // internal theme CODE): the display name is always the human-readable one; the code
+  // renders as the small badge line, never as the belief label.
+  const codeLike = t => !!t && t === t.toUpperCase() && /[A-Z]/.test(t);
+  beliefs.forEach(b => {
+    if (codeLike(b.name) && b.gloss && !codeLike(b.gloss)) {
+      const human = b.gloss.charAt(0).toUpperCase() + b.gloss.slice(1);
+      b._code = b.name; b.name = human; b.gloss = b._code;
+    }
+  });
   // ── Recency salience (matches the 3D map's curve exactly) ──
   // Beliefs talked about recently read stronger: full boost when the newest
   // evidence is under 30 days old, decaying 10% per 30 days to baseline

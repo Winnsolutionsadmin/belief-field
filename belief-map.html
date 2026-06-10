@@ -124,30 +124,52 @@ function layoutBeliefsTiered(sectors, clusters, beliefs) {
   const hubPos = new Map(); // hubId -> Vector3
   const phi = Math.PI * (3 - Math.sqrt(5));
 
-  // Category hubs: spread around their cluster core, just outside it.
-  const catHubsByCluster = new Map();
-  hubs.filter(h => h.hubType === 'category' || h.hubType === 'source').forEach(h => {
-    const cid = h.cluster;
-    if (!catHubsByCluster.has(cid)) catHubsByCluster.set(cid, []);
-    catHubsByCluster.get(cid).push(h);
+  // ── Hierarchy positioning (2026-06-10): Cluster > Sub-Belief > Category >
+  // Source. Each tier sits on a fibonacci shell around its parent, radiating
+  // outward from the cluster center so chains stay legible. Legacy single-tier
+  // 'category'/'source' hubs without a parent fall back to the cluster shell.
+  const TIER_ORDER = { subbelief: 0, category: 1, source: 2 };
+  const TIER_DIST = {
+    subbelief: (coreR, f) => coreR + 9 + Math.sqrt(f || 1) * 1.6,
+    category:  (_r, f) => 6.5 + Math.sqrt(f || 1) * 0.9,
+    source:    (_r, f) => 4.5 + Math.sqrt(f || 1) * 0.8,
+  };
+  const tiered = hubs.filter(h => h.hubType in TIER_ORDER)
+    .sort((a, b) => TIER_ORDER[a.hubType] - TIER_ORDER[b.hubType]);
+  const siblingsOf = new Map();   // parentId -> [hubs]
+  tiered.forEach(h => {
+    const pid = h.parent || ('C:' + h.cluster);
+    if (!siblingsOf.has(pid)) siblingsOf.set(pid, []);
+    siblingsOf.get(pid).push(h);
   });
-  catHubsByCluster.forEach((hubList, cid) => {
-    const cc = clusterCenters.get(cid);
-    if (!cc) return;
-    const sc = sectorCenters.get(clusters.find(c => c.id === cid)?.sector) || cc;
-    hubList.forEach((h, hi) => {
-      const yc = 1 - (hi / Math.max(1, hubList.length - 1)) * 1.6;
+  for (const [pid, sibs] of siblingsOf) {
+    // parent position: cluster center for top tier, else the already-laid hub
+    let pp = null, cc = null;
+    if (pid.startsWith('C:')) {
+      cc = clusterCenters.get(pid.slice(2));
+      pp = cc;
+    } else {
+      pp = hubPos.get(pid);
+      cc = clusterCenters.get(sibs[0].cluster) || pp;
+    }
+    if (!pp) continue;
+    const outward = cc && pp && !pp.equals(cc)
+      ? pp.clone().sub(cc).normalize()
+      : pp.clone().normalize();
+    const coreR = coreRadius(clusters.find(c => c.id === sibs[0].cluster)?.quote_count);
+    sibs.forEach((h, hi) => {
+      const yc = 1 - (hi / Math.max(1, sibs.length - 1)) * 1.6;
       const rc = Math.sqrt(Math.max(0, 1 - yc * yc));
       const tc = phi * hi * 2.6;
-      const dir = new THREE.Vector3(Math.cos(tc) * rc, yc, Math.sin(tc) * rc).normalize();
-      // sit each sub-cluster hub just outside the core, scaled to the core's size
-      const coreR = coreRadius(clusters.find(c => c.id === cid)?.quote_count);
-      const hubDist = coreR + 7 + Math.sqrt(h.frequency || 1) * 1.6;
-      const hp = cc.clone().add(dir.multiplyScalar(hubDist));
+      let dir = new THREE.Vector3(Math.cos(tc) * rc, yc, Math.sin(tc) * rc).normalize();
+      // bias child shells outward from the cluster so chains radiate, not fold back
+      if (!pid.startsWith('C:')) dir = dir.multiplyScalar(0.55).add(outward.clone().multiplyScalar(0.8)).normalize();
+      const dist = (TIER_DIST[h.hubType] || TIER_DIST.category)(coreR, h.frequency);
+      const hp = pp.clone().add(dir.multiplyScalar(dist));
       hubPos.set(h.id, hp);
-      positions.set(h.id, { pos: hp.clone(), clusterCenter: cc, sectorCenter: sc, hubDir: dir });
+      positions.set(h.id, { pos: hp.clone(), clusterCenter: cc || hp, sectorCenter: sectorCenters.get(clusters.find(c => c.id === h.cluster)?.sector) || hp, hubDir: dir });
     });
-  });
+  }
 
   // Interview hubs: centroid of touched clusters, pushed outward from origin.
   hubs.filter(h => h.hubType === 'interview').forEach(h => {
@@ -396,34 +418,28 @@ function buildUI({
                  nodeId: b.id, hue: cl?.hue ?? 0.6, vol: cl?.quote_count || 0,
                  text: `${b.title} ${b.summary || ''} ${cl?.summary || ''} ${tags.join(' ')}`.toLowerCase() });
   });
-  // Sources: aggregate named hubs by source so "pomp" finds THE source across beliefs.
+  // Sources are a BY-PRODUCT of beliefs: index by real-world source identity
+  // (source_key: 'x-com' for all tweets, slug otherwise); clicking opens the
+  // cross-belief AGGREGATE view, never a single node.
   const bySource = new Map();
+  quoteNodes.forEach(qn => {
+    const qd = qn.quote_data || {};
+    const skey = qd.source_key || qd.source_id;
+    if (!skey) return;
+    if (!bySource.has(skey)) bySource.set(skey, { quotes: 0, beliefs: new Set(), title: '' });
+    const e = bySource.get(skey);
+    e.quotes += 1;
+    e.beliefs.add(qn.cluster);
+  });
   hubNodes.forEach(h => {
     const hd = h.hub_data || {};
-    const sid = hd.source_id;
-    if (!sid) return;
-    if (!bySource.has(sid)) bySource.set(sid, { title: hd.title || sid, hubs: [], quotes: 0 });
-    const e = bySource.get(sid);
-    e.hubs.push(h);
-    e.quotes += h.frequency || 0;
+    const skey = hd.source_key || hd.source_id;
+    if (skey && bySource.has(skey) && !bySource.get(skey).title) bySource.get(skey).title = hd.title || '';
   });
-  // Sources that never earned a named hub stay findable via the sources table.
-  const quotesBySid = new Map();
-  quoteNodes.forEach(q => {
-    const sid = q.quote_data?.source_id;
-    if (!sid) return;
-    quotesBySid.set(sid, (quotesBySid.get(sid) || 0) + 1);
-  });
-  for (const [sid, n] of quotesBySid) {
-    if (!bySource.has(sid) && SRC_TABLE[sid]) bySource.set(sid, { title: SRC_TABLE[sid].title || sid, hubs: [], quotes: n });
-  }
-  for (const [sid, e] of bySource) {
-    const biggest = e.hubs.sort((a, b) => (b.frequency || 0) - (a.frequency || 0))[0];
-    const fallbackQuote = !biggest ? quoteNodes.find(q => q.quote_data?.source_id === sid) : null;
-    const nodeId = biggest ? biggest.id : (fallbackQuote ? fallbackQuote.id : null);
-    if (!nodeId) continue;
-    INDEX.push({ type: 'source', label: e.title, sub: `source · ${e.quotes} quotes · ${e.hubs.length || 1} belief${e.hubs.length === 1 ? '' : 's'}`,
-                 nodeId, hue: null, vol: e.quotes, text: `${e.title} ${sid}`.toLowerCase(), sid });
+  for (const [skey, e] of bySource) {
+    const title = e.title || SRC_TABLE[skey]?.title || skey;
+    INDEX.push({ type: 'source', label: title, sub: `source · ${e.quotes} quotes · ${e.beliefs.size} belief${e.beliefs.size === 1 ? '' : 's'}`,
+                 nodeId: null, hue: null, vol: e.quotes, text: `${title} ${skey}`.toLowerCase(), sid: skey });
   }
   // Concept tags: each tag is a result; clicking one expands to its beliefs.
   const tagMap = new Map();
@@ -464,6 +480,12 @@ function buildUI({
       item.addEventListener('mousedown', (ev) => ev.preventDefault());
       item.addEventListener('click', () => {
         if (r.type === 'tag') { searchInput.value = r.tag; runSearch(); searchInput.focus(); return; }
+        if (r.type === 'source') {
+          renderSourceAggregate(r.sid, r.label);
+          searchInput.value = '';
+          results.style.display = 'none';
+          return;
+        }
         onSelect(r.nodeId);
         searchInput.value = '';
         results.style.display = 'none';
@@ -899,11 +921,116 @@ function buildUI({
     return CAT_META.press;
   }
 
+  // Aggregated SOURCE view: a source is a by-product of beliefs, so clicking it
+  // shows EVERY belief it evidences and EVERY quote, grouped by belief.
+  function renderSourceAggregate(srcKey, displayTitle) {
+    const all = (window.QUOTES || []).filter(q => (q.source_key || q.source_id) === srcKey);
+    const meta = window.SOURCES?.[srcKey] || {};
+    const byBelief = new Map();
+    all.forEach(q => { if (!byBelief.has(q.cluster)) byBelief.set(q.cluster, []); byBelief.get(q.cluster).push(q); });
+    panel.classList.add('bcm-open');
+    panel.querySelector('.bcm-panel-cluster').innerHTML = `<span>SOURCE</span>`;
+    panel.querySelector('.bcm-panel-body').innerHTML = `
+      <div class="bcm-panel-kind">source · all appearances</div>
+      <div class="bcm-panel-title">${escapeHtml(displayTitle || meta.title || srcKey)}</div>
+      <div class="bcm-panel-headline">${all.length} quotes across ${byBelief.size} belief${byBelief.size === 1 ? '' : 's'}${meta.date ? ' · ' + escapeHtml(meta.date) : ''}</div>
+      ${[...byBelief.entries()].sort((a, b) => b[1].length - a[1].length).map(([cid, qs]) => {
+        const core = (window.CLUSTERS || []).find(c => c.id === cid);
+        return `
+        <div class="bcm-panel-section">
+          <div class="bcm-panel-label"><span class="bcm-list-dot" style="background:${core?.color || '#888'};display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px"></span>${escapeHtml(core?.name || cid)} · ${qs.length} <span class="bcm-goto-link" data-goto="C:${escapeAttr(cid)}" style="cursor:pointer;text-decoration:underline;opacity:.7">open belief</span></div>
+          <div class="bcm-quote-list" data-src-belief="${escapeAttr(cid)}"></div>
+        </div>`;
+      }).join('')}
+    `;
+    for (const [cid, qs] of byBelief) {
+      const host = panel.querySelector(`[data-src-belief="${cid}"]`);
+      if (!host) continue;
+      qs.sort((a, b) => (b.strength01 ?? 0) - (a.strength01 ?? 0)).forEach(q => {
+        const c = srcCategory(q);
+        const row = el('div', { class: 'bcm-source-row bcm-quote-clickable' });
+        row.style.borderLeft = `3px solid ${c.c}`;
+        row.innerHTML = `<div class="bcm-source-head"><span class="bcm-cat-badge" style="background:${c.c}22;color:${c.c};border-color:${c.c}55">${escapeHtml(c.label)}</span><span class="bcm-source-date">${escapeHtml(q.date || '')}</span></div><div class="bcm-source-quote">${fmtQuote(q.text || q.paraphrase)}</div>`;
+        row.addEventListener('click', () => onSelect('Q:' + q.id));
+        host.appendChild(row);
+      });
+    }
+    panel.querySelectorAll('[data-goto]').forEach(el2 => el2.addEventListener('click', () => onSelect(el2.getAttribute('data-goto'))));
+    panel.querySelector('.bcm-panel-footer').innerHTML = '';
+  }
+
   function renderHubPanel(b, cl, sectorObj) {
     const h = b.hub_data || {};
-    const hubQuotes = (window.QUOTES || []).filter(q => q._hub === b.id || q.hub === b.id);
+    const hubQuotes = (window.QUOTES || []).filter(q => q._hub === b.id || q.hub === b.id
+      || (b.hubType === 'subbelief' && q.subbelief === b.id)
+      || (b.hubType === 'category' && q.subbelief === h.parent && q.category === b.category && q.cluster === b.cluster));
     const cat = srcCategory(hubQuotes[0] || '');
     const isInterview = b.hubType === 'interview';
+    // hierarchy panels (2026-06-10): sub-belief and category tiers list their children;
+    // the source tier shows this belief's quotes plus the cross-belief aggregate link.
+    if (b.hubType === 'subbelief' || b.hubType === 'category') {
+      const children = (window.HUBS || []).filter(x => x.parent === b.id);
+      const core = (window.CLUSTERS || []).find(c => c.id === b.cluster);
+      panel.querySelector('.bcm-panel-cluster').innerHTML = `<span style="color:${b.catColor}">${escapeHtml(b.hubType === 'subbelief' ? 'SUB-BELIEF' : 'CATEGORY')}</span>`;
+      panel.querySelector('.bcm-panel-body').innerHTML = `
+        <div class="bcm-panel-kind" style="color:${b.catColor}">${b.hubType === 'subbelief' ? 'position within the belief' : escapeHtml(b.title) + ' · evidence channel'}</div>
+        <div class="bcm-panel-title">${escapeHtml(b.title)}</div>
+        ${core ? `<div class="bcm-panel-headline">${escapeHtml(core.name)} <span class="bcm-goto-link" data-goto="C:${escapeAttr(core.id)}" style="cursor:pointer;text-decoration:underline;opacity:.7">open belief</span></div>` : ''}
+        ${children.length ? `<div class="bcm-panel-section">
+          <div class="bcm-panel-label">${b.hubType === 'subbelief' ? 'Channels' : 'Sources'} · ${children.length}</div>
+          <div class="bcm-list">${children.map(ch => {
+            const n = (window.QUOTES || []).filter(q => q._hub === ch.id || (ch.hubType === 'category' && q.subbelief === b.id && q.category === ch.category)).length;
+            return `<div class="bcm-list-row" data-goto="${escapeAttr(ch.id)}"><span class="bcm-list-dot" style="background:${ch.catColor || '#888'}"></span><div class="bcm-list-meta"><div class="bcm-list-title">${escapeHtml(ch.title)}</div><div class="bcm-list-sub">${n} quote${n === 1 ? '' : 's'}</div></div></div>`;
+          }).join('')}</div>
+        </div>` : ''}
+        <div class="bcm-panel-section">
+          <div class="bcm-panel-label">Quotes · ${hubQuotes.length}</div>
+          <div class="bcm-quote-list"></div>
+        </div>
+      `;
+      const host = panel.querySelector('.bcm-quote-list');
+      hubQuotes.sort((a, b2) => (b2.strength01 ?? 0) - (a.strength01 ?? 0)).forEach(q => {
+        const c = srcCategory(q);
+        const row = el('div', { class: 'bcm-source-row bcm-quote-clickable' });
+        row.style.borderLeft = `3px solid ${c.c}`;
+        row.innerHTML = `<div class="bcm-source-head"><span class="bcm-cat-badge" style="background:${c.c}22;color:${c.c};border-color:${c.c}55">${escapeHtml(c.label)}</span><span class="bcm-source-date">${escapeHtml(q.date || '')}</span></div><div class="bcm-source-quote">${fmtQuote(q.text || q.paraphrase)}</div>`;
+        row.addEventListener('click', () => onSelect('Q:' + q.id));
+        host.appendChild(row);
+      });
+      panel.querySelectorAll('[data-goto]').forEach(el2 => el2.addEventListener('click', () => onSelect(el2.getAttribute('data-goto'))));
+      panel.querySelector('.bcm-panel-footer').innerHTML = '';
+      return;
+    }
+    if (b.hubType === 'source' && (h.source_key || h.source_id)) {
+      const skey = h.source_key || h.source_id;
+      const allAppearances = (window.QUOTES || []).filter(q => (q.source_key || q.source_id) === skey);
+      const beliefsTouched = new Set(allAppearances.map(q => q.cluster));
+      const core = (window.CLUSTERS || []).find(c => c.id === b.cluster);
+      panel.querySelector('.bcm-panel-cluster').innerHTML = `<span style="color:${b.catColor}">SOURCE</span>`;
+      panel.querySelector('.bcm-panel-body').innerHTML = `
+        <div class="bcm-panel-kind" style="color:${b.catColor}">${escapeHtml(b.category)} · source</div>
+        <div class="bcm-panel-title">${escapeHtml(b.title)}</div>
+        <div class="bcm-panel-headline">${core ? 'within ' + escapeHtml(core.name) + ' · ' : ''}${hubQuotes.length} quote${hubQuotes.length === 1 ? '' : 's'} here</div>
+        ${beliefsTouched.size > 1 ? `<div class="bcm-panel-section"><div class="bcm-aggregate-btn" style="cursor:pointer;padding:9px 12px;border:1px solid ${b.catColor}55;border-radius:9px;color:${b.catColor};font-size:12px">◉ View all ${allAppearances.length} quotes across ${beliefsTouched.size} beliefs</div></div>` : ''}
+        <div class="bcm-panel-section">
+          <div class="bcm-panel-label">Quotes · ${hubQuotes.length}</div>
+          <div class="bcm-quote-list"></div>
+        </div>
+      `;
+      const aggBtn = panel.querySelector('.bcm-aggregate-btn');
+      if (aggBtn) aggBtn.addEventListener('click', () => renderSourceAggregate(skey, b.title));
+      const host = panel.querySelector('.bcm-quote-list');
+      hubQuotes.sort((a, b2) => (b2.strength01 ?? 0) - (a.strength01 ?? 0)).forEach(q => {
+        const c = srcCategory(q);
+        const row = el('div', { class: 'bcm-source-row bcm-quote-clickable' });
+        row.style.borderLeft = `3px solid ${c.c}`;
+        row.innerHTML = `<div class="bcm-source-head"><span class="bcm-cat-badge" style="background:${c.c}22;color:${c.c};border-color:${c.c}55">influence ${q.influence_1to10 ?? Math.round((q.strength01 || 0) * 10)}/10</span><span class="bcm-source-date">${escapeHtml(q.date || '')}</span></div><div class="bcm-source-quote">${fmtQuote(q.text || q.paraphrase)}</div>`;
+        row.addEventListener('click', () => onSelect('Q:' + q.id));
+        host.appendChild(row);
+      });
+      panel.querySelector('.bcm-panel-footer').innerHTML = '';
+      return;
+    }
 
     panel.querySelector('.bcm-panel-cluster').innerHTML = `<span style="color:${b.catColor}">${escapeHtml((b.category||'').toUpperCase())}</span>`;
 
@@ -1706,7 +1833,8 @@ function startBeliefMap({ container, theme, sectors, clusters, beliefs, links, b
     if (b.kind === 'cluster') {
       r = 7 + Math.sqrt(b.frequency ?? 1) * 1.7;
     } else if (b.kind === 'hub') {
-      r = 2.4 + Math.sqrt(b.frequency ?? 1) * 0.9;
+      const tier = { subbelief: 1.3, category: 0.85, source: 0.7 }[b.hubType] ?? 1.0;
+      r = (2.4 + Math.sqrt(b.frequency ?? 1) * 0.9) * tier;
     } else if (b.kind === 'quote') {
       const s = b.strength01 ?? 0.4;
       r = 0.7 + s * 2.6;

@@ -1176,8 +1176,12 @@ function buildUI({
   }
 
   function updateCounter() {
-    const vis = beliefs.filter(b => state.visibleClusters.has(b.cluster)).length;
-    counter.textContent = `${vis} beliefs \u00b7 ${clusters.length} clusters`;
+    // correct labeling (Jarred, 2026-06-10): beliefs = the cores; everything else
+    // (categories, sources, quotes) is a datapoint, never counted as a belief.
+    const visBeliefs = beliefs.filter(b => b.kind === 'cluster' && state.visibleClusters.has(b.cluster)).length;
+    const visPoints = beliefs.filter(b => b.kind !== 'cluster' && state.visibleClusters.has(b.cluster)).length;
+    const sectorCount = (sectors && sectors.length) || 0;
+    counter.textContent = `${visBeliefs} beliefs \u00b7 ${visPoints.toLocaleString()} datapoints` + (sectorCount ? ` \u00b7 ${sectorCount} clusters` : '');
   }
   updateCounter();
 

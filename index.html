@@ -45,6 +45,8 @@
 
   <!-- Belief corpus: classic script so window.* globals are set before the module runs. -->
   <script src="data/beliefs-map-db.js"></script>
+  <!-- Cross-subject relation overlay (optional; absent file = no overlay). -->
+  <script src="data/beliefs-relations.js" onerror="this.remove()"></script>
 
   <!-- Engine: layout + themes + ui-person + engine, concatenated into one module. -->
   <script type="module">
@@ -124,7 +126,7 @@ function layoutBeliefsTiered(sectors, clusters, beliefs) {
 
   // Category hubs: spread around their cluster core, just outside it.
   const catHubsByCluster = new Map();
-  hubs.filter(h => h.hubType === 'category').forEach(h => {
+  hubs.filter(h => h.hubType === 'category' || h.hubType === 'source').forEach(h => {
     const cid = h.cluster;
     if (!catHubsByCluster.has(cid)) catHubsByCluster.set(cid, []);
     catHubsByCluster.get(cid).push(h);
@@ -366,7 +368,7 @@ function buildUI({
       <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8">
         <circle cx="11" cy="11" r="6"/><path d="M20 20l-3.5-3.5"/>
       </svg>
-      <input type="text" placeholder="Search beliefs\u2026" />
+      <input type="text" placeholder="Search beliefs, sources, quotes, concepts\u2026" />
       <div class="bcm-results"></div>
     </div>
     <div class="bcm-topright">
@@ -379,39 +381,123 @@ function buildUI({
   const results = topbar.querySelector('.bcm-results');
   const counter = topbar.querySelector('.bcm-counter');
 
-  searchInput.addEventListener('input', () => {
-    const q = searchInput.value.trim().toLowerCase();
-    results.innerHTML = '';
-    if (!q) { results.style.display = 'none'; return; }
-    const matches = beliefs
-      .filter(b => b.title.toLowerCase().includes(q) || (b.summary || '').toLowerCase().includes(q) || (b.rationale || '').toLowerCase().includes(q))
-      .slice(0, 9);
-    if (!matches.length) {
-      results.innerHTML = `<div class="bcm-result bcm-empty">No matches</div>`;
-    } else {
-      for (const b of matches) {
-        const item = el('div', { class: 'bcm-result' });
-        const cl = clusterById.get(b.cluster);
-        item.innerHTML = `
-          <span class="bcm-dot" style="background:hsl(${cl.hue*360},60%,60%)"></span>
-          <div class="bcm-result-text">
-            <strong>${highlight(b.title, q)}</strong>
-            <span>${cl.name} \u00b7 conviction ${Math.round((b.conviction ?? 0)*100)}</span>
-          </div>
-        `;
-        item.addEventListener('click', () => {
-          onSelect(b.id);
-          searchInput.value = '';
-          results.style.display = 'none';
-        });
-        results.appendChild(item);
-      }
-    }
-    results.style.display = 'block';
+  // ── Comprehensive search (2026-06-10): beliefs + named sources + quotes + concept
+  //    tags, with pre-populated suggestions on focus. One flat index of
+  //    {type, label, sub, nodeId, text} rows; substring match over label+text.
+  const SRC_TABLE = (typeof window !== 'undefined' && window.SOURCES) || {};
+  const clusterNodes = beliefs.filter(b => b.kind === 'cluster');
+  const hubNodes = beliefs.filter(b => b.kind === 'hub');
+  const quoteNodes = beliefs.filter(b => b.kind === 'quote');
+  const INDEX = [];
+  clusterNodes.forEach(b => {
+    const cl = clusterById.get(b.cluster);
+    const tags = (b.cluster_data || {}).concept_tags || (cl || {}).concept_tags || [];
+    INDEX.push({ type: 'belief', label: b.title, sub: `${cl?.name || ''} · conviction ${Math.round((b.conviction ?? 0) * 100)}`,
+                 nodeId: b.id, hue: cl?.hue ?? 0.6, vol: cl?.quote_count || 0,
+                 text: `${b.title} ${b.summary || ''} ${cl?.summary || ''} ${tags.join(' ')}`.toLowerCase() });
   });
-  searchInput.addEventListener('blur', () => setTimeout(() => results.style.display='none', 180));
-  searchInput.addEventListener('focus', () => { if (searchInput.value) results.style.display='block'; });
+  // Sources: aggregate named hubs by source so "pomp" finds THE source across beliefs.
+  const bySource = new Map();
+  hubNodes.forEach(h => {
+    const hd = h.hub_data || {};
+    const sid = hd.source_id;
+    if (!sid) return;
+    if (!bySource.has(sid)) bySource.set(sid, { title: hd.title || sid, hubs: [], quotes: 0 });
+    const e = bySource.get(sid);
+    e.hubs.push(h);
+    e.quotes += h.frequency || 0;
+  });
+  // Sources that never earned a named hub stay findable via the sources table.
+  const quotesBySid = new Map();
+  quoteNodes.forEach(q => {
+    const sid = q.quote_data?.source_id;
+    if (!sid) return;
+    quotesBySid.set(sid, (quotesBySid.get(sid) || 0) + 1);
+  });
+  for (const [sid, n] of quotesBySid) {
+    if (!bySource.has(sid) && SRC_TABLE[sid]) bySource.set(sid, { title: SRC_TABLE[sid].title || sid, hubs: [], quotes: n });
+  }
+  for (const [sid, e] of bySource) {
+    const biggest = e.hubs.sort((a, b) => (b.frequency || 0) - (a.frequency || 0))[0];
+    const fallbackQuote = !biggest ? quoteNodes.find(q => q.quote_data?.source_id === sid) : null;
+    const nodeId = biggest ? biggest.id : (fallbackQuote ? fallbackQuote.id : null);
+    if (!nodeId) continue;
+    INDEX.push({ type: 'source', label: e.title, sub: `source · ${e.quotes} quotes · ${e.hubs.length || 1} belief${e.hubs.length === 1 ? '' : 's'}`,
+                 nodeId, hue: null, vol: e.quotes, text: `${e.title} ${sid}`.toLowerCase(), sid });
+  }
+  // Concept tags: each tag is a result; clicking one expands to its beliefs.
+  const tagMap = new Map();
+  clusterNodes.forEach(b => {
+    const tags = (b.cluster_data || {}).concept_tags || (clusterById.get(b.cluster) || {}).concept_tags || [];
+    tags.forEach(t => { if (!tagMap.has(t)) tagMap.set(t, []); tagMap.get(t).push(b); });
+  });
+  for (const [t, bs] of tagMap) {
+    INDEX.push({ type: 'tag', label: t, sub: `concept · ${bs.length} belief${bs.length === 1 ? '' : 's'}`,
+                 nodeId: bs[0].id, hue: null, vol: bs.length, text: t.toLowerCase(), tag: t });
+  }
+  quoteNodes.forEach(qn => {
+    const qd = qn.quote_data || {};
+    INDEX.push({ type: 'quote', label: (qd.text || '').slice(0, 90), sub: `quote · ${SRC_TABLE[qd.source_id]?.title || qd.source_id || ''} · ${qd.date || ''}`,
+                 nodeId: qn.id, hue: null, vol: 0,
+                 text: `${qd.text || ''} ${SRC_TABLE[qd.source_id]?.title || ''} ${qd.source_id || ''}`.toLowerCase() });
+  });
+  const TYPE_BADGE = { belief: '◆', source: '◉', tag: '#', quote: '❝' };
+  const TYPE_ORDER = { belief: 0, source: 1, tag: 2, quote: 3 };
+  const GROUP_LABEL = { belief: 'Beliefs', source: 'Sources', tag: 'Concepts', quote: 'Quotes' };
 
+  function renderRows(rows, q) {
+    results.innerHTML = '';
+    if (!rows.length) { results.innerHTML = `<div class="bcm-result bcm-empty">No matches</div>`; return; }
+    let lastType = null;
+    for (const r of rows) {
+      if (r.type !== lastType) {
+        lastType = r.type;
+        const head = el('div', { class: 'bcm-result-group' });
+        head.textContent = GROUP_LABEL[r.type];
+        results.appendChild(head);
+      }
+      const item = el('div', { class: 'bcm-result' });
+      const dot = r.hue != null
+        ? `<span class="bcm-dot" style="background:hsl(${r.hue * 360},60%,60%)"></span>`
+        : `<span class="bcm-dot bcm-dot-type">${TYPE_BADGE[r.type]}</span>`;
+      item.innerHTML = `${dot}<div class="bcm-result-text"><strong>${q ? highlight(r.label, q) : escapeHtml(r.label)}</strong><span>${escapeHtml(r.sub)}</span></div>`;
+      item.addEventListener('mousedown', (ev) => ev.preventDefault());
+      item.addEventListener('click', () => {
+        if (r.type === 'tag') { searchInput.value = r.tag; runSearch(); searchInput.focus(); return; }
+        onSelect(r.nodeId);
+        searchInput.value = '';
+        results.style.display = 'none';
+      });
+      results.appendChild(item);
+    }
+  }
+
+  // Pre-populated suggestions on focus: top beliefs, top sources, top concepts by volume.
+  function suggestions() {
+    const top = (type, n) => INDEX.filter(r => r.type === type).sort((a, b) => b.vol - a.vol).slice(0, n);
+    return [...top('belief', 4), ...top('source', 5), ...top('tag', 4)];
+  }
+
+  function runSearch() {
+    const q = searchInput.value.trim().toLowerCase();
+    if (!q) { renderRows(suggestions(), ''); results.style.display = 'block'; return; }
+    const matches = INDEX.filter(r => r.text.includes(q))
+      .sort((a, b) => TYPE_ORDER[a.type] - TYPE_ORDER[b.type] || b.vol - a.vol);
+    const capped = [];
+    const perType = { belief: 6, source: 5, tag: 4, quote: 8 };
+    const seenType = {};
+    for (const m of matches) {
+      seenType[m.type] = (seenType[m.type] || 0) + 1;
+      if (seenType[m.type] <= perType[m.type]) capped.push(m);
+      if (capped.length >= 20) break;
+    }
+    renderRows(capped, q);
+    results.style.display = 'block';
+  }
+
+  searchInput.addEventListener('input', runSearch);
+  searchInput.addEventListener('blur', () => setTimeout(() => results.style.display = 'none', 180));
+  searchInput.addEventListener('focus', runSearch);
   // ─── Left dock ──────────────────────────────────────────────
   const dock = el('div', { class: 'bcm-leftdock' });
   const hasSectors = sectors && sectors.length;
@@ -1035,6 +1121,8 @@ function injectStyles(container, theme) {
 .${styleId} .bcm-search input { width:100%; padding:12px 14px 12px 38px; background:${theme.panelBg}; border:1px solid ${theme.panelBd}; border-radius:12px;
   color:${theme.text}; font:inherit; font-size:13px; outline:none; backdrop-filter: blur(14px); box-sizing: border-box; }
 .${styleId} .bcm-search input::placeholder { color:${theme.textDim}; }
+.${styleId} .bcm-result-group { font:9.5px ${theme.fontMono}; letter-spacing:.12em; text-transform:uppercase; color:${theme.textDim}; padding:8px 14px 3px; }
+.${styleId} .bcm-dot-type { display:inline-grid; place-items:center; width:14px; height:14px; border-radius:4px; color:${theme.textDim}; font-size:10px; background:transparent; }
 .${styleId} .bcm-search input:focus { border-color:${theme.accent}; box-shadow:0 0 0 3px ${theme.accent}22; }
 .${styleId} .bcm-results { display:none; position:absolute; top:calc(100% + 6px); left:0; right:0;
   background:${theme.panelBg}; border:1px solid ${theme.panelBd}; border-radius:12px; backdrop-filter:blur(14px); overflow:hidden; max-height:380px; overflow-y:auto; z-index:10; }
@@ -1374,9 +1462,14 @@ function startBeliefMap({ container, theme, sectors, clusters, beliefs, links, b
     return 'other';
   }
   // Stamp every quote belief with its source category + color (used by layout + render).
+  // TRUST the data's own category first (build-map-from-db.py derives it from the quote's
+  // register, which is always right); the venue-string heuristics above are a FALLBACK for
+  // legacy data only. Heuristics-first painted most non-reference subjects slate "other"
+  // (their venue strings never matched the reference build's patterns) — fixed 2026-06-10.
   beliefs.forEach(b => {
     if (b.kind === 'quote') {
-      const cat = categoryOf(b.quote_data?.source_id);
+      const dataCat = b.quote_data?.category;
+      const cat = (dataCat && dataCat !== 'other') ? dataCat : categoryOf(b.quote_data?.source_id);
       b.sourceCategory = cat;
       b.catColor = CAT_COLORS[cat] || CAT_COLORS.other;
     }
@@ -1709,8 +1802,10 @@ function startBeliefMap({ container, theme, sectors, clusters, beliefs, links, b
     const alphas = new Float32Array(ls.length * SEG * 2);
     let p = 0, a = 0;
     ls.forEach((l, li) => {
-      const a1 = nodeById.get(l.source).basePos;
-      const b1 = nodeById.get(l.target).basePos;
+      const na = nodeById.get(l.source), nb = nodeById.get(l.target);
+      if (!na || !nb) return;   // dangling link endpoint (filtered/unpositioned node)
+      const a1 = na.basePos;
+      const b1 = nb.basePos;
       const mid = a1.clone().add(b1).multiplyScalar(0.5);
       // Near-straight lines (tiny bend) — no big arcs.
       const outward = mid.clone().normalize().multiplyScalar(-a1.distanceTo(b1) * 0.02);
@@ -1784,6 +1879,130 @@ function startBeliefMap({ container, theme, sectors, clusters, beliefs, links, b
     scene.add(line);
     typeLines[t] = { line, geo, mat, baseAlphas, alphas };
   }
+
+  // ─── Peer relation arcs (cross-subject overlay) ──────────────────
+  // Other people's belief fields, related to this subject's beliefs, render
+  // as labeled peer nodes on the field's periphery with dotted arcs to the
+  // engaged cluster cores: green = convergent, red = divergent, slate =
+  // adjacent. Data: window.BELIEF_RELATIONS (derived/beliefs-relations.js,
+  // built from committed PUBLIC clusters only by pipeline/build-relations.mjs
+  // + the polarity judge). Absent data = no overlay; window.BELIEF_RELATIONS_OFF
+  // disables it without a rebuild.
+  (() => {
+    const REL = (typeof window !== 'undefined' && !window.BELIEF_RELATIONS_OFF && window.BELIEF_RELATIONS) || null;
+    if (!REL || !REL.bySubject) return;
+    const subjName = (subject && subject.name) || '';
+    const myId = REL.names ? REL.names[subjName] : null;
+    const mine = myId && REL.bySubject[myId];
+    if (!mine || !mine.peers || !mine.peers.length) return;
+
+    const REL_STYLE = {
+      CONVERGENT: { color: 0x35e07c, dashed: false, alpha: 0.55 },
+      DIVERGENT:  { color: 0xff5a5a, dashed: true,  alpha: 0.65 },
+      ADJACENT:   { color: 0x9aa7c7, dashed: true,  alpha: 0.30 },
+    };
+
+    // Field radius: peers sit beyond the farthest core.
+    let maxR = 0;
+    nodeRecords.forEach(r => { if (r.id.startsWith('C:')) maxR = Math.max(maxR, r.basePos.length()); });
+    const peerR = maxR * 1.45 + 60;
+
+    function makeLabelSprite(text, colorCss) {
+      const c = document.createElement('canvas');
+      const ctx = c.getContext('2d');
+      const font = '600 34px Inter, system-ui, sans-serif';
+      ctx.font = font;
+      const w = Math.ceil(ctx.measureText(text).width) + 28;
+      c.width = w; c.height = 56;
+      const ctx2 = c.getContext('2d');
+      ctx2.font = font;
+      ctx2.fillStyle = 'rgba(8,12,24,0.72)';
+      ctx2.fillRect(0, 0, w, 56);
+      ctx2.fillStyle = colorCss;
+      ctx2.textBaseline = 'middle';
+      ctx2.fillText(text, 14, 30);
+      const tex = new THREE.CanvasTexture(c);
+      tex.colorSpace = THREE.SRGBColorSpace;
+      const spr = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false }));
+      spr.scale.set(w * 0.16, 9, 1);
+      return spr;
+    }
+
+    const peerGroup = new THREE.Group();
+    const PEER_HUES = [0.55, 0.12, 0.78, 0.33, 0.92, 0.45];
+    const SEGP = 24;
+
+    mine.peers.forEach((peer, pi) => {
+      const rels = (peer.relations || []).filter(r => REL_STYLE[r.relation]);
+      if (!rels.length) return;
+
+      // Position: azimuth spread, biased toward the mean direction of the
+      // engaged cores so arcs stay short and readable.
+      const mean = new THREE.Vector3();
+      let n = 0;
+      rels.forEach(r => {
+        const core = nodeById.get('C:' + r.belief_id);
+        if (core) { mean.add(core.basePos); n++; }
+      });
+      if (!n) return;
+      mean.multiplyScalar(1 / n);
+      if (mean.length() < 1) mean.set(1, 0, 0);
+      const jitter = (pi - (mine.peers.length - 1) / 2) * 0.5;
+      const dir = mean.clone().normalize();
+      const azim = Math.atan2(dir.z, dir.x) + jitter * 0.45;
+      const pos = new THREE.Vector3(
+        Math.cos(azim) * peerR,
+        dir.y * peerR * 0.35 + (pi % 2 ? 28 : -22),
+        Math.sin(azim) * peerR
+      );
+
+      const hue = PEER_HUES[pi % PEER_HUES.length];
+      const col = new THREE.Color().setHSL(hue, 0.65, 0.62);
+      const mesh = new THREE.Mesh(
+        new THREE.IcosahedronGeometry(7.5, 1),
+        new THREE.MeshStandardMaterial({ color: col, emissive: col, emissiveIntensity: 0.55, roughness: 0.4 })
+      );
+      mesh.position.copy(pos);
+      peerGroup.add(mesh);
+      const label = makeLabelSprite(peer.name || peer.subject, '#' + col.getHexString());
+      label.position.copy(pos).add(new THREE.Vector3(0, 14, 0));
+      peerGroup.add(label);
+
+      // Arcs: one dotted Bezier per relation, bowing outward.
+      rels.forEach(r => {
+        const core = nodeById.get('C:' + r.belief_id);
+        if (!core) return;
+        const style = REL_STYLE[r.relation];
+        const a1 = core.basePos, b1 = pos;
+        const mid = a1.clone().add(b1).multiplyScalar(0.5);
+        const bow = mid.clone().normalize().multiplyScalar(a1.distanceTo(b1) * 0.18 + 18);
+        const ctrl = mid.clone().add(bow);
+        const pts = [];
+        for (let s = 0; s <= SEGP; s++) {
+          const t = s / SEGP, u = 1 - t;
+          pts.push(new THREE.Vector3(
+            u*u*a1.x + 2*u*t*ctrl.x + t*t*b1.x,
+            u*u*a1.y + 2*u*t*ctrl.y + t*t*b1.y,
+            u*u*a1.z + 2*u*t*ctrl.z + t*t*b1.z
+          ));
+        }
+        const segPts = [];
+        for (let s = 0; s < SEGP; s++) {
+          if (style.dashed && s % 3 === 2) continue;  // dotted: drop every third segment
+          segPts.push(pts[s], pts[s + 1]);
+        }
+        const geo = new THREE.BufferGeometry().setFromPoints(segPts);
+        const strength = Math.max(0.25, Math.min(1, (r.confidence ?? 0.7) * (0.6 + (r.score ?? 0.5) * 0.6)));
+        const mat = new THREE.LineBasicMaterial({
+          color: style.color, transparent: true, opacity: style.alpha * strength,
+          depthWrite: false, blending: THREE.AdditiveBlending,
+        });
+        peerGroup.add(new THREE.LineSegments(geo, mat));
+      });
+    });
+
+    scene.add(peerGroup);
+  })();
 
   // ─── Lights ──────────────────────────────────────────────────────
   scene.add(new THREE.AmbientLight(0x6a7ab0, 0.35));

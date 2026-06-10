@@ -128,11 +128,11 @@ function layoutBeliefsTiered(sectors, clusters, beliefs) {
   // Source. Each tier sits on a fibonacci shell around its parent, radiating
   // outward from the cluster center so chains stay legible. Legacy single-tier
   // 'category'/'source' hubs without a parent fall back to the cluster shell.
-  const TIER_ORDER = { subbelief: 0, category: 1, source: 2 };
+  const TIER_ORDER = { category: 0, source: 1 };
   const TIER_DIST = {
-    subbelief: (coreR, f) => coreR + 9 + Math.sqrt(f || 1) * 1.6,
-    category:  (_r, f) => 6.5 + Math.sqrt(f || 1) * 0.9,
-    source:    (_r, f) => 4.5 + Math.sqrt(f || 1) * 0.8,
+    // category hubs sit clearly OUTSIDE the belief's glass core (never inside the ball)
+    category: (coreR, f) => coreR + 10 + Math.sqrt(f || 1) * 1.4,
+    source:   (_r, f) => 5.5 + Math.sqrt(f || 1) * 0.9,
   };
   const tiered = hubs.filter(h => h.hubType in TIER_ORDER)
     .sort((a, b) => TIER_ORDER[a.hubType] - TIER_ORDER[b.hubType]);
@@ -524,7 +524,7 @@ function buildUI({
   const dock = el('div', { class: 'bcm-leftdock' });
   const hasSectors = sectors && sectors.length;
   dock.innerHTML = `
-    <div class="bcm-section-title">${hasSectors ? 'Sectors' : 'Clusters'}</div>
+    <div class="bcm-section-title">Clusters</div>
     <div class="bcm-clusters"></div>
     <div class="bcm-section-title bcm-spaced">Cluster conviction</div>
     <div class="bcm-strength">
@@ -533,7 +533,7 @@ function buildUI({
     </div>
     <div class="bcm-section-title bcm-spaced">Source legend</div>
     <div class="bcm-legend">
-      <div class="bcm-legend-row"><span class="bcm-leg-node bcm-leg-cluster"></span><span>Belief cluster (glass hub)</span></div>
+      <div class="bcm-legend-row"><span class="bcm-leg-node bcm-leg-cluster"></span><span>Belief (glass core)</span></div>
       <div class="bcm-legend-row"><span class="bcm-leg-dot" style="background:#4eb3ff;box-shadow:0 0 8px #4eb3ff"></span><span>Tweet / X</span></div>
       <div class="bcm-legend-row"><span class="bcm-leg-dot" style="background:#b98bff;box-shadow:0 0 8px #b98bff"></span><span>Podcast</span></div>
       <div class="bcm-legend-row"><span class="bcm-leg-dot" style="background:#34d399;box-shadow:0 0 8px #34d399"></span><span>Interview</span></div>
@@ -866,7 +866,7 @@ function buildUI({
             <span class="bcm-source-tier bcm-tier-${escapeAttr((tier+'').toLowerCase())}">${escapeHtml(tier)}</span>
             <span class="bcm-source-date">${escapeHtml(q.date || meta.date || '')}</span>
             <span class="bcm-source-venue">${escapeHtml(meta.venue || '')}</span>
-            ${meta.url ? `<a class="bcm-source-link" href="${escapeAttr(meta.url)}" target="_blank" rel="noopener" title="Open source">\u2197</a>` : ''}
+            ${srcUrl ? `<a class="bcm-source-link" href="${escapeAttr(srcUrl)}" target="_blank" rel="noopener" title="Open source">\u2197</a>` : ''}
           </div>
           <div class="bcm-source-quote">${body}</div>
           ${(q.emphasis_markers && q.emphasis_markers.length) ? `<div class="bcm-chips bcm-chips-sm">${q.emphasis_markers.map(m => `<span class="bcm-chip">${escapeHtml(m)}</span>`).join('')}</div>` : ''}
@@ -962,24 +962,23 @@ function buildUI({
   function renderHubPanel(b, cl, sectorObj) {
     const h = b.hub_data || {};
     const hubQuotes = (window.QUOTES || []).filter(q => q._hub === b.id || q.hub === b.id
-      || (b.hubType === 'subbelief' && q.subbelief === b.id)
-      || (b.hubType === 'category' && q.subbelief === h.parent && q.category === b.category && q.cluster === b.cluster));
+      || (b.hubType === 'category' && q.category === b.category && q.cluster === b.cluster));
     const cat = srcCategory(hubQuotes[0] || '');
     const isInterview = b.hubType === 'interview';
     // hierarchy panels (2026-06-10): sub-belief and category tiers list their children;
     // the source tier shows this belief's quotes plus the cross-belief aggregate link.
-    if (b.hubType === 'subbelief' || b.hubType === 'category') {
+    if (b.hubType === 'category') {
       const children = (window.HUBS || []).filter(x => x.parent === b.id);
       const core = (window.CLUSTERS || []).find(c => c.id === b.cluster);
-      panel.querySelector('.bcm-panel-cluster').innerHTML = `<span style="color:${b.catColor}">${escapeHtml(b.hubType === 'subbelief' ? 'SUB-BELIEF' : 'CATEGORY')}</span>`;
+      panel.querySelector('.bcm-panel-cluster').innerHTML = `<span style="color:${b.catColor}">CATEGORY</span>`;
       panel.querySelector('.bcm-panel-body').innerHTML = `
-        <div class="bcm-panel-kind" style="color:${b.catColor}">${b.hubType === 'subbelief' ? 'position within the belief' : escapeHtml(b.title) + ' · evidence channel'}</div>
+        <div class="bcm-panel-kind" style="color:${b.catColor}">${escapeHtml(b.title)} · evidence channel</div>
         <div class="bcm-panel-title">${escapeHtml(b.title)}</div>
         ${core ? `<div class="bcm-panel-headline">${escapeHtml(core.name)} <span class="bcm-goto-link" data-goto="C:${escapeAttr(core.id)}" style="cursor:pointer;text-decoration:underline;opacity:.7">open belief</span></div>` : ''}
         ${children.length ? `<div class="bcm-panel-section">
-          <div class="bcm-panel-label">${b.hubType === 'subbelief' ? 'Channels' : 'Sources'} · ${children.length}</div>
+          <div class="bcm-panel-label">Sources · ${children.length}</div>
           <div class="bcm-list">${children.map(ch => {
-            const n = (window.QUOTES || []).filter(q => q._hub === ch.id || (ch.hubType === 'category' && q.subbelief === b.id && q.category === ch.category)).length;
+            const n = (window.QUOTES || []).filter(q => q._hub === ch.id).length;
             return `<div class="bcm-list-row" data-goto="${escapeAttr(ch.id)}"><span class="bcm-list-dot" style="background:${ch.catColor || '#888'}"></span><div class="bcm-list-meta"><div class="bcm-list-title">${escapeHtml(ch.title)}</div><div class="bcm-list-sub">${n} quote${n === 1 ? '' : 's'}</div></div></div>`;
           }).join('')}</div>
         </div>` : ''}
@@ -1089,16 +1088,23 @@ function buildUI({
     panel.querySelector('.bcm-panel-footer').innerHTML = '';
   }
 
+  function sourceUrlOf(q) {
+    return q.url || window.SOURCES?.[q.source_id]?.url
+      || (typeof window !== 'undefined' && window.SOURCE_LINKS ? window.SOURCE_LINKS[q.source_id] : '') || '';
+  }
+
   function renderQuotePanel(b, cl, sectorObj) {
     const q = b.quote_data || {};
     const meta = window.SOURCES?.[q.source_id] || {};
     const tier = meta.tier || '\u2014';
     const signal = Math.round((q.signal_strength ?? 0) * 100);
     const cat = srcCategory(q);
+    const srcUrl = sourceUrlOf(q);
 
     panel.querySelector('.bcm-panel-body').innerHTML = `
       <div class="bcm-panel-kind" style="color:${cat.c}">${escapeHtml(cat.label)} \u00b7 evidence</div>
       <div class="bcm-quote-big" style="border-left-color:${cat.c}">${fmtQuote(q.text || q.paraphrase)}</div>
+      ${srcUrl ? `<div class="bcm-panel-section"><a class="bcm-open-source" href="${escapeAttr(srcUrl)}" target="_blank" rel="noopener" style="display:inline-flex;align-items:center;gap:7px;padding:9px 13px;border:1px solid ${cat.c}55;border-radius:9px;color:${cat.c};font-size:12px;text-decoration:none">\u2197 Open source material</a></div>` : ''}
 
       <div class="bcm-panel-section">
         <div class="bcm-source-row">
@@ -1107,7 +1113,7 @@ function buildUI({
             <span class="bcm-source-tier bcm-tier-${escapeAttr(tier.toLowerCase())}">${escapeHtml(tier)}</span>
             <span class="bcm-source-date">${escapeHtml(q.date || meta.date || '')}</span>
             <span class="bcm-source-venue">${escapeHtml(meta.venue || '')}</span>
-            ${meta.url ? `<a class="bcm-source-link" href="${escapeAttr(meta.url)}" target="_blank" rel="noopener" title="Open source">\u2197</a>` : ''}
+            ${srcUrl ? `<a class="bcm-source-link" href="${escapeAttr(srcUrl)}" target="_blank" rel="noopener" title="Open source">\u2197</a>` : ''}
           </div>
           <div class="bcm-source-title">${escapeHtml(meta.title || '')}</div>
         </div>
@@ -1833,7 +1839,7 @@ function startBeliefMap({ container, theme, sectors, clusters, beliefs, links, b
     if (b.kind === 'cluster') {
       r = 7 + Math.sqrt(b.frequency ?? 1) * 1.7;
     } else if (b.kind === 'hub') {
-      const tier = { subbelief: 1.3, category: 0.85, source: 0.7 }[b.hubType] ?? 1.0;
+      const tier = { category: 1.0, source: 0.72 }[b.hubType] ?? 1.0;
       r = (2.4 + Math.sqrt(b.frequency ?? 1) * 0.9) * tier;
     } else if (b.kind === 'quote') {
       const s = b.strength01 ?? 0.4;

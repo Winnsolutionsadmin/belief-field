@@ -834,7 +834,7 @@ function buildUI({
       list.forEach(q => {
         const meta = window.SOURCES?.[q.source_id] || {};
         const tier = meta.tier || '\u2014';
-        const cat = srcCategory(q.source_id);
+        const cat = srcCategory(q);
         const row = el('div', { class: 'bcm-source-row bcm-quote-clickable' });
         row.style.borderLeft = `3px solid ${cat.c}`;
         const body = fmtQuote(q.text || q.paraphrase);
@@ -868,23 +868,41 @@ function buildUI({
     panel.querySelector('.bcm-panel-footer').innerHTML = '';
   }
 
-  function srcCategory(sid) {
+  const CAT_META = {
+    tweet:     { k: 'tweet',     label: 'Tweet / X',            c: '#4eb3ff' },
+    podcast:   { k: 'podcast',   label: 'Podcast',              c: '#b98bff' },
+    interview: { k: 'interview', label: 'Interview',            c: '#34d399' },
+    press:     { k: 'press',     label: 'Press',                c: '#ff9d4c' },
+    official:  { k: 'official',  label: 'Testimony / official', c: '#f5d76e' },
+    blog:      { k: 'blog',      label: 'Written / bylined',    c: '#ff6f9c' },
+  };
+  const REG_CAT = { A: 'interview', B: 'podcast', C: 'blog', D: 'tweet', E: 'official' };
+  // Category of a quote: the DATA's category first (register-derived at build time),
+  // then the quote's register letter, then slug/venue inference. There is NO 'Other'
+  // bucket (Jarred, 2026-06-10): every quote in this data model has a register, and the
+  // final fallback for pathological data is 'press', never a junk category.
+  function srcCategory(q) {
+    const qd = (q && typeof q === 'object') ? q : {};
+    const sid = qd.source_id || (typeof q === 'string' ? q : '');
+    if (qd.category && CAT_META[qd.category]) return CAT_META[qd.category];
+    const reg = String(qd.register || '').toUpperCase();
+    if (REG_CAT[reg]) return CAT_META[REG_CAT[reg]];
     const s = window.SOURCES?.[sid] || {};
-    const v = (s.venue || '').toLowerCase();
-    const t = s.tier || '';
-    if (sid === 'tweets-csv' || v.includes('twitter') || v.includes('x /') || v.includes('@')) return { k: 'tweet', label: 'Tweet / X', c: '#4eb3ff' };
-    if (/podcast|on the brink|empire|galaxy brains|arch lending|beckman|defiance|treasuries|brink|libsyn|spotify|soundcloud/.test(v)) return { k: 'podcast', label: 'Podcast', c: '#b98bff' };
-    if (/testimony|house|senate|committee|occ|comptroller|congress/.test(v)) return { k: 'official', label: 'Testimony / official', c: '#f5d76e' };
-    if (/anchorage|insights|blog|linkedin pulse/.test(v)) return { k: 'blog', label: 'Blog / bylined', c: '#ff6f9c' };
-    if (t === 'T2') return { k: 'interview', label: 'Interview', c: '#34d399' };
-    if (t === 'T4' || t === 'T5') return { k: 'press', label: 'Press', c: '#ff9d4c' };
-    return { k: 'other', label: 'Other', c: '#9aa7c7' };
+    const t = String(s.tier || '').toUpperCase();
+    if (REG_CAT[t]) return CAT_META[REG_CAT[t]];
+    const v = `${sid} ${(s.venue || '')}`.toLowerCase();
+    if (/tweet|twitter|@|\borig-|\bquote-|\breply/.test(v)) return CAT_META.tweet;
+    if (/podcast|episode|radio|spotify|soundcloud|libsyn|youtube|panel|fireside|interview|-tv\b/.test(v)) return CAT_META.podcast;
+    if (/testimony|house|senate|committee|occ|comptroller|congress|filing|sec\b|release/.test(v)) return CAT_META.official;
+    if (/blog|medium|mirror|substack|essay|insights|writings|article/.test(v)) return CAT_META.blog;
+    if (t === 'T2') return CAT_META.interview;
+    return CAT_META.press;
   }
 
   function renderHubPanel(b, cl, sectorObj) {
     const h = b.hub_data || {};
     const hubQuotes = (window.QUOTES || []).filter(q => q._hub === b.id || q.hub === b.id);
-    const cat = srcCategory(hubQuotes[0]?.source_id || '');
+    const cat = srcCategory(hubQuotes[0] || '');
     const isInterview = b.hubType === 'interview';
 
     panel.querySelector('.bcm-panel-cluster').innerHTML = `<span style="color:${b.catColor}">${escapeHtml((b.category||'').toUpperCase())}</span>`;
@@ -926,7 +944,7 @@ function buildUI({
     const host = panel.querySelector('.bcm-quote-list');
     hubQuotes.sort((a,b)=>(b.strength01??0)-(a.strength01??0)).forEach(q => {
       const meta = window.SOURCES?.[q.source_id] || {};
-      const c = srcCategory(q.source_id);
+      const c = srcCategory(q);
       const row = el('div', { class: 'bcm-source-row bcm-quote-clickable' });
       row.style.borderLeft = `3px solid ${c.c}`;
       const body = fmtQuote(q.text || q.paraphrase);
@@ -949,7 +967,7 @@ function buildUI({
     const meta = window.SOURCES?.[q.source_id] || {};
     const tier = meta.tier || '\u2014';
     const signal = Math.round((q.signal_strength ?? 0) * 100);
-    const cat = srcCategory(q.source_id);
+    const cat = srcCategory(q);
 
     panel.querySelector('.bcm-panel-body').innerHTML = `
       <div class="bcm-panel-kind" style="color:${cat.c}">${escapeHtml(cat.label)} \u00b7 evidence</div>
@@ -1459,7 +1477,7 @@ function startBeliefMap({ container, theme, sectors, clusters, beliefs, links, b
     if (/anchorage|insights|blog|linkedin pulse/.test(v)) return 'blog';
     if (t === 'T2') return 'interview';
     if (t === 'T4' || t === 'T5') return 'press';
-    return 'other';
+    return 'press';   // no 'Other' bucket (Jarred, 2026-06-10): worst-case fallback is press
   }
   // Stamp every quote belief with its source category + color (used by layout + render).
   // TRUST the data's own category first (build-map-from-db.py derives it from the quote's

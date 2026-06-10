@@ -248,10 +248,9 @@ td.qcell{border-left:3px solid transparent}
     const el=document.getElementById('filters');
     const sectorChips=SECTORS.map(s=>`<button class="chip dotc" data-f="sector" data-v="${s.id}"><span class="cd" style="background:${secColor(s.id)}"></span>${esc(s.name.split(' ')[0])}</button>`).join('');
     const tierChips=[['1','Core'],['2','News-spike'],['3','Deep-quiet'],['null','Untiered']].map(([v,l])=>`<button class="chip" data-f="tier" data-v="${v}">${l}</button>`).join('');
-    const compChips=['LOW','MIXED','REVIEW','HIGH'].map(c=>`<button class="chip" data-f="comp" data-v="${c}"><span style="color:var(--c-${c})">●</span> ${c}</button>`).join('');
+    // Compliance is inert metadata at this stage (Jarred, 2026-06-10): no filter toggle.
     el.innerHTML=`<div class="fgroup"><span class="flabel">Sector</span>${sectorChips}</div>
       <div class="fgroup"><span class="flabel">Tier</span>${tierChips}</div>
-      <div class="fgroup"><span class="flabel">Compliance</span>${compChips}</div>
       <div class="fgroup"><button class="chip" data-f="av">⚑ Audio-verify only</button><button class="chip" data-f="onmap">◉ On-map only</button></div>`;
     el.querySelectorAll('.chip').forEach(c=>c.addEventListener('click',()=>{
       const f=c.dataset.f,v=c.dataset.v;
